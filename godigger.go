@@ -61,6 +61,7 @@ func main() {
 
 	// Get VirusTotal API key from environment.
 	virusTotalAPIKey := os.Getenv("VIRUSTOTAL_API_KEY")
+	urlScanAPIKey := os.Getenv("URLSCAN_API_KEY")
 
 	// Define which engines to run based on the search type.
 	var engines []string
@@ -103,7 +104,7 @@ func main() {
 			case "CommonCrawl":
 				res, err = commoncrawlSearch(domain)
 			case "urlscan":
-				res, err = urlscanSearch(domain, searchType)
+				res, err = urlscanSearch(domain, searchType, urlScanAPIKey)
 			case "VirusTotal":
 				res, err = virustotalSearch(domain, searchType, virusTotalAPIKey)
 			case "WebArchive":
@@ -335,13 +336,16 @@ func commoncrawlSearch(domain string) ([]string, error) {
 }
 
 // urlscanSearch queries the urlscan.io API (supports IPs and URLs).
-func urlscanSearch(domain, searchType string) ([]string, error) {
+func urlscanSearch(domain, searchType string, apiKey string) ([]string, error) {
 	results := []string{}
 	// Skip processing if searchType is subdomains.
 	if searchType == "subdomains" {
 		return results, nil
 	}
-	baseURL := "https://urlscan.io/api/v1/search/?q=" + url.QueryEscape(domain)
+	if apiKey == "" {
+		return results, fmt.Errorf("URLScan: URLSCAN_API_KEY not set. Skipping URLScan.")
+	}
+	baseURL := "https://urlscan.io/api/v1/search/?q=domain:" + url.QueryEscape(domain)
 	currentURL := baseURL
 	for {
 		debugPrint("urlscan: Fetching data from " + currentURL)
@@ -351,6 +355,7 @@ func urlscanSearch(domain, searchType string) ([]string, error) {
 		}
 		req.Header.Set("Host", "urlscan.io")
 		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("Api-Key", apiKey)
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			return results, err
@@ -377,8 +382,11 @@ func urlscanSearch(domain, searchType string) ([]string, error) {
 			}
 			if searchType == "urls" {
 				if task, ok := m["task"].(map[string]interface{}); ok {
-					if urlField, ok := task["url"].(string); ok && urlField != "" {
-						results = append(results, urlField)
+					// Only add the URL if the apexDomain matches the target domain.
+					if apex, ok := task["apexDomain"].(string); ok && apex == domain {
+						if urlField, ok := task["url"].(string); ok && urlField != "" {
+							results = append(results, urlField)
+						}
 					}
 				}
 			} else if searchType == "ips" {

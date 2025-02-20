@@ -17,6 +17,7 @@ This is a multithreaded Go-based tool that queries multiple domain intelligence 
 ## Requirements
 - Go 1.17+
 - Environment variable `VIRUSTOTAL_API_KEY` must be set to use VirusTotal
+- Environment variable `URLSCAN_API_KEY` must be set to use URLScan
 
 ## Installation
 Clone the repository and build the binary:
