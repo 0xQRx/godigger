@@ -391,8 +391,11 @@ func urlscanSearch(domain, searchType string, apiKey string) ([]string, error) {
 				}
 			} else if searchType == "ips" {
 				if page, ok := m["page"].(map[string]interface{}); ok {
-					if ip, ok := page["ip"].(string); ok && ip != "" {
-						results = append(results, ip)
+					// Only add the IP if the apexDomain matches the target domain.
+					if apex, ok := page["apexDomain"].(string); ok && apex == domain {
+						if ip, ok := page["ip"].(string); ok && ip != "" {
+							results = append(results, ip)
+						}
 					}
 				}
 			}
@@ -498,7 +501,7 @@ func virustotalSearch(domain, searchType, apiKey string) ([]string, error) {
 func webarchiveSearch(domain string) ([]string, error) {
 	results := []string{}
 	subsPrefix := "*."
-	apiURL := fmt.Sprintf("http://web.archive.org/cdx/search/cdx?url=%s%s/*&output=json&collapse=urlkey", subsPrefix, domain)
+	apiURL := fmt.Sprintf("https://web.archive.org/cdx/search/cdx?url=%s%s/*&output=json&collapse=urlkey", subsPrefix, domain)
 	debugPrint("WebArchive: Fetching data from " + apiURL)
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
