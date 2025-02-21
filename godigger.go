@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"strconv" 
 )
 
 var (
@@ -500,37 +501,127 @@ func virustotalSearch(domain, searchType, apiKey string) ([]string, error) {
 // webarchiveSearch queries the WebArchive API (only for URLs).
 func webarchiveSearch(domain string) ([]string, error) {
 	results := []string{}
-	subsPrefix := "*."
-	apiURL := fmt.Sprintf("https://web.archive.org/cdx/search/cdx?url=%s%s/*&output=json&collapse=urlkey", subsPrefix, domain)
-	debugPrint("WebArchive: Fetching data from " + apiURL)
-	req, err := http.NewRequest("GET", apiURL, nil)
+
+	// 1) First, attempt to figure out how many pages are available
+	//    by calling &showNumPages=True.
+	baseURL := fmt.Sprintf(
+		"https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&collapse=urlkey&showNumPages=True",
+		domain,
+	)
+	debugPrint("WebArchive (initial): " + baseURL)
+
+	req, err := http.NewRequest("GET", baseURL, nil)
 	if err != nil {
 		return results, err
 	}
 	req.Header.Set("User-Agent", userAgent)
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return results, err
 	}
+	defer resp.Body.Close()
+
 	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
 	if err != nil {
 		return results, err
 	}
-	var data [][]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return results, err
+
+	pageCountStr := strings.TrimSpace(string(body))
+	debugPrint("WebArchive: showNumPages returned: " + pageCountStr)
+
+	// 2) Try to parse the returned page count
+	totalPages, err := strconv.Atoi(pageCountStr)
+	if err != nil || totalPages < 1 {
+		// Fallback: either no pages or couldn't parse => single fetch of everything
+		debugPrint("WebArchive: fallback to single fetch (couldn't parse page count)")
+
+		fallbackURL := fmt.Sprintf("https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&collapse=urlkey", domain)
+		debugPrint("WebArchive: single fetch URL => " + fallbackURL)
+
+		fallReq, err := http.NewRequest("GET", fallbackURL, nil)
+		if err != nil {
+			return results, err
+		}
+		fallReq.Header.Set("User-Agent", userAgent)
+
+		fallResp, err := httpClient.Do(fallReq)
+		if err != nil {
+			return results, err
+		}
+		defer fallResp.Body.Close()
+
+		fallBody, err := ioutil.ReadAll(fallResp.Body)
+		if err != nil {
+			return results, err
+		}
+
+		var data [][]interface{}
+		if err := json.Unmarshal(fallBody, &data); err != nil {
+			return results, err
+		}
+
+		// Remember first row is usually just a header row in the JSON array
+		for i, row := range data {
+			if i == 0 {
+				continue
+			}
+			if len(row) > 2 {
+				if urlField, ok := row[2].(string); ok && urlField != "" {
+					results = append(results, urlField)
+				}
+			}
+		}
+		return results, nil
 	}
-	// Skip header (first element) and extract the URL from each subsequent record.
-	for i, entry := range data {
-		if i == 0 {
+
+	// 3) If totalPages was parsed successfully and > 0, then loop through all pages
+	debugPrint(fmt.Sprintf("WebArchive: totalPages = %d", totalPages))
+	for page := 0; page < totalPages; page++ {
+		pageURL := fmt.Sprintf(
+			"https://web.archive.org/cdx/search/cdx?url=*.%s/*&output=json&collapse=urlkey&page=%d",
+			domain, page,
+		)
+		debugPrint("WebArchive (page): " + pageURL)
+
+		pageReq, err := http.NewRequest("GET", pageURL, nil)
+		if err != nil {
+			debugPrint(fmt.Sprintf("WebArchive: error building request page=%d -> %v", page, err))
 			continue
 		}
-		if len(entry) > 2 {
-			if urlField, ok := entry[2].(string); ok && urlField != "" {
-				results = append(results, urlField)
+		pageReq.Header.Set("User-Agent", userAgent)
+
+		pageResp, err := httpClient.Do(pageReq)
+		if err != nil {
+			debugPrint(fmt.Sprintf("WebArchive: error fetching page=%d -> %v", page, err))
+			continue
+		}
+		pageBody, err := ioutil.ReadAll(pageResp.Body)
+		pageResp.Body.Close()
+		if err != nil {
+			debugPrint(fmt.Sprintf("WebArchive: error reading page=%d -> %v", page, err))
+			continue
+		}
+
+		var data [][]interface{}
+		if err := json.Unmarshal(pageBody, &data); err != nil {
+			debugPrint(fmt.Sprintf("WebArchive: JSON unmarshal error on page=%d -> %v", page, err))
+			continue
+		}
+
+		// Skip header row (i == 0)
+		for i, row := range data {
+			if i == 0 {
+				continue
+			}
+			if len(row) > 2 {
+				if urlField, ok := row[2].(string); ok && urlField != "" {
+					results = append(results, urlField)
+				}
 			}
 		}
 	}
+
 	return results, nil
 }
+
